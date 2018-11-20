@@ -43,9 +43,10 @@ alias nodes="k get nodes -o=custom-columns=Name:.metadata.name,IP:.status.addres
 alias deletef="k delete --grace-period=0 --force"
 
 # Get events in order
-alias events="k get events --sort-by='{lastTimestamp}' --field-selector type!=Normal"
+alias failed-events="k get events --sort-by='{lastTimestamp}' --field-selector type!=Normal"
 
-alias all-events="k get events --sort-by='{lastTimestamp}' --field-selector type!=Normal --all-namespaces"
+#Get all failed events in all namespaces
+alias all-failed-events="k get events --sort-by='{lastTimestamp}' --field-selector type!=Normal --all-namespaces"
 
 # get images that pods use in your namespace with a count
 alias pod-images="k get pods --no-headers -o=custom-columns=Images:.spec.containers[*].image | tr ',' '\n' | sort | uniq -c"
