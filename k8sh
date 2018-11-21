@@ -1,20 +1,38 @@
+#!/usr/bin/env bash
+
 ct() {
   if [ -z "$1" ]; then
-    echo $KUBECTL_CONTEXT
+    local contexts=$(k config get-contexts -o=name | sort -n)
+    echo "$contexts"
     return
   fi
   export KUBECTL_CONTEXT=$1
 }
 export -f ct
 
+_ct_completions()
+{
+  local contexts=$(k config get-contexts -o=name | sort -n)
+  COMPREPLY=($(compgen -W "${contexts}" "${COMP_WORDS[1]}"))
+}
+export -f _ct_completions
+
 ns() {
   if [ -z "$1" ]; then
-    echo $KUBECTL_NAMESPACE
+    local namespaces=$(k get namespaces -o=jsonpath='{range .items[*].metadata.name}{@}{"\n"}{end}')
+    echo "${namespaces}"
     return
   fi
   export KUBECTL_NAMESPACE=$1
 }
 export -f ns
+
+_ns_completions()
+{
+  local namespaces=$(k get namespaces -o=jsonpath='{range .items[*].metadata.name}{@}{"\n"}{end}')
+  COMPREPLY=($(compgen -W "${namespaces}" "${COMP_WORDS[1]}"))
+}
+export -f _ns_completions
 
 reloadExtensions() {
   if [ -e ~/.k8sh_extensions ]; then
@@ -122,13 +140,28 @@ k8sh_init() {
   alias configmaps="get configmaps"
   alias secrets="get secrets"
 
+  complete -F _ns_completions ns
+  complete -F _ct_completions ct
+
+  local bash_completion_present=$(type -t _get_comp_words_by_ref)
+
+  if [[ ! -z "$bash_completion_present" ]]; then
+    echo "Setting up k completion..."
+    # without sourcing completion for `k` does not recognize __start_kubectl
+    source <(kubectl completion bash)
+    # make completion work for `k`
+    complete -F __start_kubectl k
+  else
+      echo -e "${RED}For k completion please install bash-completion${RESTORE}"
+  fi
+
   reloadExtensions
 
   # Set up PS1 prompt
-  export PS1="($PS_CONTEXT_COLOR\$(ct)$PS_RESTORE/$PS_NAMESPACE_COLOR\$KUBECTL_NAMESPACE$PS_RESTORE) \W ${PS_LPURPLE}\$${PS_RESTORE} "
+  export PS1="($PS_CONTEXT_COLOR\$KUBECTL_CONTEXT$PS_RESTORE/$PS_NAMESPACE_COLOR\$KUBECTL_NAMESPACE$PS_RESTORE) \W ${PS_LPURPLE}\$${PS_RESTORE} "
 
   echo ""
-  echo -e "Context: $CONTEXT_COLOR$(ct)$RESTORE"
+  echo -e "Context: $CONTEXT_COLOR$KUBECTL_CONTEXT$RESTORE"
   echo -e "Namespace: $NAMESPACE_COLOR$KUBECTL_NAMESPACE$RESTORE"
 }
 export -f k8sh_init

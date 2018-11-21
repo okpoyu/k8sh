@@ -43,10 +43,10 @@ alias nodes="k get nodes -o=custom-columns=Name:.metadata.name,IP:.status.addres
 alias deletef="k delete --grace-period=0 --force"
 
 # Get events in order
-alias failed-events="k get events --sort-by='{lastTimestamp}' --field-selector type!=Normal"
+alias events-failed="k get events --sort-by='{lastTimestamp}' --field-selector type!=Normal"
 
 #Get all failed events in all namespaces
-alias all-failed-events="k get events --sort-by='{lastTimestamp}' --field-selector type!=Normal --all-namespaces"
+alias events-failed-all="k get events --sort-by='{lastTimestamp}' --field-selector type!=Normal --all-namespaces"
 
 # get images that pods use in your namespace with a count
 alias pod-images="k get pods --no-headers -o=custom-columns=Images:.spec.containers[*].image | tr ',' '\n' | sort | uniq -c"
@@ -68,6 +68,25 @@ pods() {
 
 all-pods() {
   k get pods --all-namespaces $@ | highlight green 'Running'
+}
+
+all-pods-on-node() {
+  local NODE_NAME=$1
+  shift
+  k get pods -o wide --all-namespaces \
+             --field-selector spec.nodeName=${NODE_NAME} $@
+}
+
+all-failed-pods() {
+  k get pods --all-namespaces --field-selector status.phase!=Running --sort-by={.spec.nodeName} $@ | highlight green 'Running'
+}
+
+all-failed-pods-on-node() {
+  local NODE_NAME=$1
+  shift
+  k get pods -o wide --all-namespaces \
+             --field-selector status.phase!=Running,spec.nodeName=${NODE_NAME} $@
+
 }
 
 ssh-nodes() {
@@ -98,6 +117,7 @@ get-random-node() {
 
 # Show pods that don't have all containers ready
 alias brokenpods='k get pod --all-namespaces | grep -vE '\''([0-9]+)/\1'\'''
+alias brokenpodswide='k get pod --all-namespaces -o wide | grep -vE '\''([0-9]+)/\1'\'''
 
 # Runs a busybox container (optionally selecting the a specific node to run on)
 # and shells into it.
@@ -158,3 +178,17 @@ delete-temp-components() {
   delete $U pod/temp-scheduler
   delete $U pod/temp-controller-manager
 }
+
+# delete pods with status
+delete-pods-with-status() {
+    local POD_STATUS=$1
+    pod_list=($(brokenpods | grep ${POD_STATUS} | awk '{print $1" "$2}'))
+    x=0
+    while [[ ${x} -lt ${#pod_list[*]} ]]
+    do
+        k delete po ${pod_list[$x+1]} -n ${pod_list[$x]}
+        x=$(( $x + 2 ))
+    done
+}
+
+alias ist="istioctl --context \$KUBECTL_CONTEXT --namespace \$KUBECTL_NAMESPACE"
