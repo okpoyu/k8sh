@@ -43,10 +43,10 @@ alias nodes="k get nodes -o=custom-columns=Name:.metadata.name,IP:.status.addres
 alias deletef="k delete --grace-period=0 --force"
 
 # Get events in order
-alias failed-events="k get events --sort-by='{lastTimestamp}' --field-selector type!=Normal"
+alias events-failed="k get events --sort-by='{lastTimestamp}' --field-selector type!=Normal"
 
 #Get all failed events in all namespaces
-alias all-failed-events="k get events --sort-by='{lastTimestamp}' --field-selector type!=Normal --all-namespaces"
+alias events-failed-all="k get events --sort-by='{lastTimestamp}' --field-selector type!=Normal --all-namespaces"
 
 # get images that pods use in your namespace with a count
 alias pod-images="k get pods --no-headers -o=custom-columns=Images:.spec.containers[*].image | tr ',' '\n' | sort | uniq -c"
@@ -68,6 +68,16 @@ pods() {
 
 all-pods() {
   k get pods --all-namespaces $@ | highlight green 'Running'
+}
+
+all-failed-pods() {
+  k get pods --all-namespaces --field-selector status.phase!=Running --sort-by={.spec.nodeName} $@ | highlight green 'Running'
+}
+
+all-failed-pods-on-node() {
+  k get pods -o wide \
+             --field-selector status.phase!=Running,spec.nodeName=$1 \
+             --all-namespaces
 }
 
 ssh-nodes() {
