@@ -208,3 +208,93 @@ delete-pods-with-status() {
 }
 
 alias istioctl="istioctl --context \$KUBECTL_CONTEXT --namespace \$KUBECTL_NAMESPACE"
+
+node-shell() {
+  local NODE="$1"; shift
+  local COMMAND="$@"
+  local IMAGE="mirror-hub.docker.tech.lastmile.com/library/alpine"
+  local POD="nsenter-$(env LC_ALL=C tr -dc a-z0-9 < /dev/urandom | head -c 6)"
+  if [ -z "${COMMAND}" ]; then
+    COMMAND="bash -l"
+  fi
+  if [ -z "${NODE}" ]; then
+    echo "usage: node-shell <nodename>" 1>&2
+    return
+  fi
+  local OVERRIDES="$(
+cat <<EOT
+{
+  "spec": {
+    "nodeName": "$NODE",
+    "hostPID": true,
+    "containers": [
+      {
+        "securityContext": {
+          "privileged": true
+        },
+        "image": "$IMAGE",
+        "name": "nsenter",
+        "stdin": true,
+        "stdinOnce": true,
+        "tty": true,
+        "command": [ "nsenter", "--target", "1", "--mount", "--uts", "--ipc", "--net", "--pid", "--", "bash", "-c", "${COMMAND}" ]
+      }
+    ]
+  }
+}
+EOT
+  )"
+  echo "${OVERRIDES}"
+  echo "spawning \"$POD\" on \"$NODE\""
+  k run -n default --rm --image "$IMAGE" --overrides="$OVERRIDES" --generator=run-pod/v1 -ti "$POD"
+}
+
+check_certs() {
+  local SECRET=$1; shift
+  local GET_ARGS="$@"
+  local RETURN=0
+  CERTS=$(
+    for PEM in $(get secret ${GET_ARGS} ${SECRET} -o json \
+      | jq -r '.data[]'); do
+        echo ${PEM} \
+        | base64 -d
+      done \
+      | xargs \
+      | sed -e 's/ //g' -e 's/-----[^-]*-----/ /g')
+  for CERT in ${CERTS}; do
+    local CERT=$(echo -e "-----BEGIN CERTIFICATE-----\n${CERT}\n-----END CERTIFICATE-----")
+    if echo "${CERT}" | openssl x509 -noout 2>/dev/null; then
+      echo "${CERT}" | openssl x509 -noout -checkend 1 -subject -enddate
+      ((RETURN+=$?))
+    fi
+  done
+  return ${RETURN}
+}
+istio_secret() {
+  local POD=$1
+  k get pod ${POD} -o json \
+    | jq -r '.spec.volumes[]
+    | select(.name == "istio-certs")
+    | .secret.secretName'
+}
+invalid_istio_secrets() {
+  while read LINE; do
+    set ${LINE}
+    if ! check_certs $2 -n $1 > /dev/null; then
+      echo "${LINE}"
+    fi
+  done < <(get secret --field-selector type=istio.io/key-and-cert --all-namespaces --no-headers)
+}
+delete_invalid_istio_secrets() {
+  local SLEEP=$1
+  if [ -z "${SLEEP}" ]; then
+    SLEEP=60
+  fi
+  while read LINE; do
+    set ${LINE}
+#    if echo ${LINE} | grep istio\.system >/dev/null; then continue; fi
+    echo delete secret -n $1 $2
+    delete secret -n $1 $2
+    echo "Waiting ${SLEEP} seconds"; sleep ${SLEEP}
+  done < <(invalid_istio_secrets)
+}
