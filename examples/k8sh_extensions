@@ -81,6 +81,7 @@ all-failed-pods() {
   k get pods --all-namespaces --field-selector status.phase!=Running --sort-by={.spec.nodeName} $@ | highlight green 'Running'
 }
 
+
 all-failed-pods-on-node() {
   local NODE_NAME=$1
   shift
@@ -298,3 +299,57 @@ delete_invalid_istio_secrets() {
     echo "Waiting ${SLEEP} seconds"; sleep ${SLEEP}
   done < <(invalid_istio_secrets)
 }
+
+# Runs a temporary kube-scheduler
+# Assumes self hosting setup
+temp-scheduler() {
+  delete pod/temp-scheduler
+  U=""
+  NODETOUSE="$(get-random-node)"
+  if [[ $1 ]]; then
+    NODETOUSE=$1
+  fi
+  if [[ $KUSER ]]; then
+    U="--user=$KUSER"
+  fi
+  k $U --namespace kube-system get deployment kube-scheduler -o json | jq '.spec.template * {"kind": "Pod", "apiVersion": "v1", "metadata": {"name": "temp-scheduler", "namespace": "kube-system", "labels": {"k8s-app": "temp-scheduler"}}}' | jq ".spec.nodeName = \"$NODETOUSE\"" | kubectl $U create -f -
+}
+
+# Runs a temporary kube-controller-manager
+# Assumes self hosting setup
+temp-controller-manager() {
+  delete pod/temp-controller-manager
+  U=""
+  NODETOUSE="$(get-random-node)"
+  if [[ $1 ]]; then
+    NODETOUSE=$1
+  fi
+  if [[ $KUSER ]]; then
+    U="--user=$KUSER"
+  fi
+  k $U --namespace kube-system get deployment kube-controller-manager -o json | jq '.spec.template * {"kind": "Pod", "apiVersion": "v1", "metadata": {"name": "temp-controller-manager", "namespace": "kube-system", "labels": {"k8s-app": "temp-controller-manager"}}}' | jq ".spec.nodeName = \"$NODETOUSE\"" | kubectl $U create -f -
+}
+
+# removes the temporary scheduler and controller manager when not required
+delete-temp-components() {
+  U=""
+  if [[ $KUSER ]]; then
+    U="--user=$KUSER"
+  fi
+  delete $U pod/temp-scheduler
+  delete $U pod/temp-controller-manager
+}
+
+# delete pods with status
+delete-pods-with-status() {
+    local POD_STATUS=$1
+    pod_list=($(brokenpods | grep ${POD_STATUS} | awk '{print $1" "$2}'))
+    x=0
+    while [[ ${x} -lt ${#pod_list[*]} ]]
+    do
+        k delete po ${pod_list[$x+1]} -n ${pod_list[$x]}
+        x=$(( $x + 2 ))
+    done
+}
+
+alias ist="istioctl --context \$KUBECTL_CONTEXT --namespace \$KUBECTL_NAMESPACE"
