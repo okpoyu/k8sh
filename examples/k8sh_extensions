@@ -81,6 +81,7 @@ all-failed-pods() {
   k get pods --all-namespaces --field-selector status.phase!=Running --sort-by={.spec.nodeName} $@ | highlight green 'Running'
 }
 
+
 all-failed-pods-on-node() {
   local NODE_NAME=$1
   shift
@@ -97,6 +98,22 @@ ssh-nodes() {
 
 nodeips() {
   k get nodes -o jsonpath={.items[*].status.addresses[?\(@.type==\"ExternalIP\"\)].address}
+}
+
+namesof() {
+  local type=${1:-'pods'}
+  k get --no-headers $type | awk '{ print $1 }' | tr '\n' ',' | sed 's/,$/\n/'
+}
+
+namesofgrep() {
+  local search=${1:-'-'}
+  local type=${2:-'pods'}
+  k get --no-headers -o wide $type | grep $search | awk '{ print $1 }' | tr '\n' ',' | sed 's/,$/\n/'
+}
+
+# output cert as text
+readcert() {
+  k get secrets -o json $@ | jq '.data["tls.crt"]' -r | base64 -d | openssl x509 -in /dev/stdin -text -noout
 }
 
 # add grep to pods/nodes listing, eg:
@@ -137,6 +154,150 @@ toolbox() {
     U="--user=$KUSER"
   fi
   k $U run -i --tty toolbox --limits='cpu=200m,memory=512Mi' --image=${TOOLBOX_IMAGE-busybox} --restart=Never --overrides="$OVERRIDE_PARAM" -- sh
+}
+
+# Runs a temporary kube-scheduler
+# Assumes self hosting setup
+temp-scheduler() {
+  delete pod/temp-scheduler
+  U=""
+  NODETOUSE="$(get-random-node)"
+  if [[ $1 ]]; then
+    NODETOUSE=$1
+  fi
+  if [[ $KUSER ]]; then
+    U="--user=$KUSER"
+  fi
+  k $U --namespace kube-system get deployment kube-scheduler -o json | jq '.spec.template * {"kind": "Pod", "apiVersion": "v1", "metadata": {"name": "temp-scheduler", "namespace": "kube-system", "labels": {"k8s-app": "temp-scheduler"}}}' | jq ".spec.nodeName = \"$NODETOUSE\"" | kubectl $U create -f -
+}
+
+# Runs a temporary kube-controller-manager
+# Assumes self hosting setup
+temp-controller-manager() {
+  delete pod/temp-controller-manager
+  U=""
+  NODETOUSE="$(get-random-node)"
+  if [[ $1 ]]; then
+    NODETOUSE=$1
+  fi
+  if [[ $KUSER ]]; then
+    U="--user=$KUSER"
+  fi
+  k $U --namespace kube-system get deployment kube-controller-manager -o json | jq '.spec.template * {"kind": "Pod", "apiVersion": "v1", "metadata": {"name": "temp-controller-manager", "namespace": "kube-system", "labels": {"k8s-app": "temp-controller-manager"}}}' | jq ".spec.nodeName = \"$NODETOUSE\"" | kubectl $U create -f -
+}
+
+# removes the temporary scheduler and controller manager when not required
+delete-temp-components() {
+  U=""
+  if [[ $KUSER ]]; then
+    U="--user=$KUSER"
+  fi
+  delete $U pod/temp-scheduler
+  delete $U pod/temp-controller-manager
+}
+
+# delete pods with status
+delete-pods-with-status() {
+    local POD_STATUS=$1
+    pod_list=($(brokenpods | grep ${POD_STATUS} | awk '{print $1" "$2}'))
+    x=0
+    while [[ ${x} -lt ${#pod_list[*]} ]]
+    do
+        k delete po ${pod_list[$x+1]} -n ${pod_list[$x]}
+        x=$(( $x + 2 ))
+    done
+}
+
+alias istioctl="istioctl --context \$KUBECTL_CONTEXT --namespace \$KUBECTL_NAMESPACE"
+
+node-shell() {
+  local NODE="$1"; shift
+  local COMMAND="$@"
+  local IMAGE="mirror-hub.docker.tech.lastmile.com/library/alpine"
+  local POD="nsenter-$(env LC_ALL=C tr -dc a-z0-9 < /dev/urandom | head -c 6)"
+  if [ -z "${COMMAND}" ]; then
+    COMMAND="bash -l"
+  fi
+  if [ -z "${NODE}" ]; then
+    echo "usage: node-shell <nodename>" 1>&2
+    return
+  fi
+  local OVERRIDES="$(
+cat <<EOT
+{
+  "spec": {
+    "nodeName": "$NODE",
+    "hostPID": true,
+    "containers": [
+      {
+        "securityContext": {
+          "privileged": true
+        },
+        "image": "$IMAGE",
+        "name": "nsenter",
+        "stdin": true,
+        "stdinOnce": true,
+        "tty": true,
+        "command": [ "nsenter", "--target", "1", "--mount", "--uts", "--ipc", "--net", "--pid", "--", "bash", "-c", "${COMMAND}" ]
+      }
+    ]
+  }
+}
+EOT
+  )"
+  echo "${OVERRIDES}"
+  echo "spawning \"$POD\" on \"$NODE\""
+  k run -n default --rm --image "$IMAGE" --overrides="$OVERRIDES" --generator=run-pod/v1 -ti "$POD"
+}
+
+check_certs() {
+  local SECRET=$1; shift
+  local GET_ARGS="$@"
+  local RETURN=0
+  CERTS=$(
+    for PEM in $(get secret ${GET_ARGS} ${SECRET} -o json \
+      | jq -r '.data[]'); do
+        echo ${PEM} \
+        | base64 -d
+      done \
+      | xargs \
+      | sed -e 's/ //g' -e 's/-----[^-]*-----/ /g')
+  for CERT in ${CERTS}; do
+    local CERT=$(echo -e "-----BEGIN CERTIFICATE-----\n${CERT}\n-----END CERTIFICATE-----")
+    if echo "${CERT}" | openssl x509 -noout 2>/dev/null; then
+      echo "${CERT}" | openssl x509 -noout -checkend 1 -subject -enddate
+      ((RETURN+=$?))
+    fi
+  done
+  return ${RETURN}
+}
+istio_secret() {
+  local POD=$1
+  k get pod ${POD} -o json \
+    | jq -r '.spec.volumes[]
+    | select(.name == "istio-certs")
+    | .secret.secretName'
+}
+invalid_istio_secrets() {
+  while read LINE; do
+    set ${LINE}
+    if ! check_certs $2 -n $1 > /dev/null; then
+      echo "${LINE}"
+    fi
+  done < <(get secret --field-selector type=istio.io/key-and-cert --all-namespaces --no-headers)
+}
+delete_invalid_istio_secrets() {
+  local SLEEP=$1
+  if [ -z "${SLEEP}" ]; then
+    SLEEP=60
+  fi
+  while read LINE; do
+    set ${LINE}
+#    if echo ${LINE} | grep istio\.system >/dev/null; then continue; fi
+    echo delete secret -n $1 $2
+    delete secret -n $1 $2
+    echo "Waiting ${SLEEP} seconds"; sleep ${SLEEP}
+  done < <(invalid_istio_secrets)
 }
 
 # Runs a temporary kube-scheduler
