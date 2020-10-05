@@ -66,6 +66,7 @@ Shorthands for common actions
 * **scale** -> k scale
 * **rollout** -> k rollout
 * **logs** -> k logs
+* **explain** -> k explain
 
 ### Query for common resources (kubectl get)
 Instead of typing out `kubectl get pods/services/replicationcontrollers/etc` you can simply type the following aliases to get a list of those resources:
@@ -93,6 +94,7 @@ The `ct`, `ns`, `k` (as well as `kubectl`) commands support tab completion. `k` 
 ### Installing bash 4 / bash-completion on MacOSX
 
 Upgrading to Bash 4: https://itnext.io/upgrading-bash-on-macos-7138bd1066ba
+
 Installing Bash Completion: https://davidalger.com/posts/bash-completion-on-os-x-with-brew/
 
 ## .k8sh_extensions
@@ -106,4 +108,4 @@ reloadExtensions
 See `examples/k8sh_extensions` for some examples of what extensions can do.
 
 ## Todo
-* Get the standard `kubectl` tab completion to work with aliases.
+* Feel free to submit your ideas!
