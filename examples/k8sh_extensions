@@ -129,7 +129,7 @@ alias leaders?="leaders | grep"
 
 # Pick a random node in Ready state
 get-random-node() {
-  k get nodes | grep ' Ready' | awk '{ print $1 }' | shuf -n 1
+  k get nodes | grep -v etcd | grep ' Ready' | awk '{ print $1 }' | shuf -n 1
 }
 
 # Show pods that don't have all containers ready
@@ -139,21 +139,25 @@ alias brokenpodswide='k get pod --all-namespaces -o wide | grep -vE '\''([0-9]+)
 # Runs a busybox container (optionally selecting the a specific node to run on)
 # and shells into it.
 toolbox() {
-  delete po/toolbox
+  delete po/toolbox --ignore-not-found=true
   NODETOUSE="$(get-random-node)"
-  OVERRIDE_PARAM=""
-  U=""
-  if [[ $1 ]]; then
-    echo "Restricting pod to node: $1"
-    OVERRIDE_PARAM="{ \"spec\": { \"nodeName\": \"$1\", \"serviceAccountName\": \"kube-controller-manager\" } }"
-  else
-    echo "Restricting pod to node: $NODETOUSE"
-    OVERRIDE_PARAM="{ \"spec\": { \"nodeName\": \"$NODETOUSE\", \"serviceAccountName\": \"kube-controller-manager\" } }"
-  fi
-  if [[ $KUSER ]]; then
-    U="--user=$KUSER"
-  fi
-  k $U run -i --tty toolbox --limits='cpu=200m,memory=512Mi' --image=${TOOLBOX_IMAGE-busybox} --restart=Never --overrides="$OVERRIDE_PARAM" -- sh
+  SERVICE_ACCOUNT="default"
+  INJECT_SIDECAR="false"
+  while [ "$1" = "--node" -o "$1" = "--sa" -o "$1" = "--inject-sidecar" ]; do
+    if [ "$1" = "--node" ] ; then
+        NODETOUSE="$2"
+        shift 2
+    elif [ "$1" = "--sa" ] ; then
+        SERVICE_ACCOUNT="$2"
+        shift 2
+    elif [ "$1" = "--inject-sidecar" ] ; then
+        INJECT_SIDECAR="true"
+        shift
+    fi
+  done
+  OVERRIDE_PARAM="{ \"apiVersion\": \"v1\", \"spec\": { \"nodeName\": \"$NODETOUSE\"}, \"metadata\": {\"annotations\": { \"sidecar.istio.io/inject\":\"$INJECT_SIDECAR\" } } }"
+  echo "Restricting pod to node: $NODETOUSE using service account: $SERVICE_ACCOUNT"
+  k run -i --tty toolbox --limits='cpu=200m,memory=512Mi' --image=mirror-releases.docker.ospcfc.tech.lastmile.com/osp-cfc-platform/toolbox:0.1.0 --restart=Never --serviceaccount="$SERVICE_ACCOUNT" --overrides="$OVERRIDE_PARAM" -- bash
 }
 
 # Runs a temporary kube-scheduler
@@ -203,7 +207,7 @@ delete-pods-with-status() {
     x=0
     while [[ ${x} -lt ${#pod_list[*]} ]]
     do
-        k delete po ${pod_list[$x+1]} -n ${pod_list[$x]}
+        k delete po ${pod_list[$x+1]} -n ${pod_list[$x]} --wait=false
         x=$(( $x + 2 ))
     done
 }
@@ -295,7 +299,7 @@ delete_invalid_istio_secrets() {
     set ${LINE}
 #    if echo ${LINE} | grep istio\.system >/dev/null; then continue; fi
     echo delete secret -n $1 $2
-    delete secret -n $1 $2
+    delete secret -n $1 $2 --wait=false
     echo "Waiting ${SLEEP} seconds"; sleep ${SLEEP}
   done < <(invalid_istio_secrets)
 }
@@ -340,16 +344,26 @@ delete-temp-components() {
   delete $U pod/temp-controller-manager
 }
 
-# delete pods with status
-delete-pods-with-status() {
-    local POD_STATUS=$1
-    pod_list=($(brokenpods | grep ${POD_STATUS} | awk '{print $1" "$2}'))
-    x=0
-    while [[ ${x} -lt ${#pod_list[*]} ]]
-    do
-        k delete po ${pod_list[$x+1]} -n ${pod_list[$x]}
-        x=$(( $x + 2 ))
-    done
+pods_with_invalid_istio_certs() {
+  while read LINE; do
+    set ${LINE}
+    echo -e "\n\e[31m+++  Certs for pod $1  +++\e[0m"
+    istioctl pc s $1
+  done < <(k get po -o name | cut -d '/' -f 2)
 }
 
-alias ist="istioctl --context \$KUBECTL_CONTEXT --namespace \$KUBECTL_NAMESPACE"
+stern() {
+  /home/okpoyu/go/bin/stern --context ${KUBECTL_CONTEXT} -n ${KUBECTL_NAMESPACE} "$@"
+}
+
+access-matrix() {
+  /home/okpoyu/.krew/bin/kubectl-access_matrix --context ${KUBECTL_CONTEXT} -n ${KUBECTL_NAMESPACE} "$@"
+}
+
+krew() {
+  /home/okpoyu/.krew/bin/kubectl-krew "$@"
+}
+
+telepresence() {
+  /usr/bin/telepresence --context ${KUBECTL_CONTEXT} --namespace ${KUBECTL_NAMESPACE} "$@"
+}
